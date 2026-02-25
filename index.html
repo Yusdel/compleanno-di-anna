@@ -873,8 +873,8 @@
         <div class="fanta-container">
             <h2 class="fanta-title">🎭 FantaCerruti 🏆</h2>
             <form class="fanta-form" id="fantaForm">
-                <input type="text" id="fantaNome" placeholder="Il tuo nome" required>
-                <input type="text" id="fantaVincitore" placeholder="Chi vincerà?" required>
+                <input type="text" id="fantaNome" name="nome" placeholder="Il tuo nome" required>
+                <input type="text" id="fantaVincitore" name="vincitore" placeholder="Chi vincerà?" required>
                 <button type="submit" class="fanta-vota-btn" id="fantaVotaBtn">Vota!</button>
             </form>
             <div id="fantaMessage"></div>
@@ -925,6 +925,8 @@
         <p>Non arrivare basic, arriva iconico tesoro 💖</p>
     </footer>
 
+    <script src="https://www.gstatic.com/firebasejs/10.14.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.0/firebase-firestore-compat.js"></script>
     <script>
         // Falling emojis
         const emojis2 = ['🎭', '💰', '💵', '💸', '🎪'];
@@ -946,8 +948,8 @@
         setInterval(createFallingEmoji, 400);
         for (let i = 0; i < 10; i++) setTimeout(createFallingEmoji, i * 200);
 
-        // Fanta-Sanremo
-        const FANTA_STORAGE_KEY = 'fantaSanremoVotes';
+        // FantaCerruti - Firebase Firestore
+        const FORM_DATA_COLLECTION = 'formData';
         const fantaForm = document.getElementById('fantaForm');
         const fantaNome = document.getElementById('fantaNome');
         const fantaVincitore = document.getElementById('fantaVincitore');
@@ -955,32 +957,37 @@
         const fantaMessage = document.getElementById('fantaMessage');
         const fantaPodio = document.getElementById('fantaPodio');
 
-        function getVotes() {
-            try {
-                const data = localStorage.getItem(FANTA_STORAGE_KEY);
-                return data ? JSON.parse(data) : [];
-            } catch {
-                return [];
-            }
-        }
+        // Replace with your config from Firebase Console > Project Settings > Your apps
+        const firebaseConfig = {
+            apiKey: "YOUR_API_KEY",
+            authDomain: "fantacerruti.firebaseapp.com",
+            projectId: "fantacerruti",
+            storageBucket: "fantacerruti.appspot.com",
+            messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
 
-        function saveVotes(votes) {
-            localStorage.setItem(FANTA_STORAGE_KEY, JSON.stringify(votes));
+        let db = null;
+        let fantaVotesCache = [];
+
+        try {
+            firebase.initializeApp(firebaseConfig);
+            db = firebase.firestore();
+        } catch (err) {
+            console.error('Firebase init error:', err);
         }
 
         function hasUserVoted(voterName) {
-            const votes = getVotes();
-            return votes.some(v => v.voterName.toLowerCase().trim() === voterName.toLowerCase().trim());
+            return fantaVotesCache.some(v =>
+                (v.nome || v.voterName || '').toLowerCase().trim() === voterName.toLowerCase().trim()
+            );
         }
 
-        function getTop3() {
-            const votes = getVotes();
+        function getTop3FromVotes(votes) {
             const counts = {};
             votes.forEach(v => {
-                const winner = v.winner.trim();
-                if (winner) {
-                    counts[winner] = (counts[winner] || 0) + 1;
-                }
+                const winner = (v.vincitore || v.winner || '').trim();
+                if (winner) counts[winner] = (counts[winner] || 0) + 1;
             });
             return Object.entries(counts)
                 .map(([nome, count]) => ({ nome, count }))
@@ -999,8 +1006,8 @@
             }, 4000);
         }
 
-        function renderClassifica() {
-            const top3 = getTop3();
+        function renderClassifica(votes) {
+            const top3 = getTop3FromVotes(votes || fantaVotesCache);
             if (top3.length === 0) {
                 fantaPodio.innerHTML = '<p style="color: var(--text-light); opacity: 0.8;">Nessun voto ancora. Sii il primo!</p>';
             } else {
@@ -1015,7 +1022,22 @@
             }
         }
 
-        fantaForm.addEventListener('submit', (e) => {
+        async function loadFormData() {
+            if (!db) {
+                fantaPodio.innerHTML = '<p style="color: var(--pink); opacity: 0.9;">Configura Firebase per caricare i dati.</p>';
+                return;
+            }
+            try {
+                const snap = await db.collection(FORM_DATA_COLLECTION).get();
+                fantaVotesCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                renderClassifica();
+            } catch (err) {
+                console.error('Firestore read error:', err);
+                fantaPodio.innerHTML = '<p style="color: #e74c3c;">Errore caricamento dati. Verifica le regole Firestore.</p>';
+            }
+        }
+
+        fantaForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             const nome = fantaNome.value.trim();
             const vincitore = fantaVincitore.value.trim();
@@ -1030,16 +1052,33 @@
                 return;
             }
 
-            const votes = getVotes();
-            votes.push({ voterName: nome, winner: vincitore });
-            saveVotes(votes);
+            if (!db) {
+                showMessage('Firebase non configurato. Aggiungi le credenziali.', true);
+                return;
+            }
 
-            fantaForm.querySelectorAll('input').forEach(i => i.disabled = true);
             fantaVotaBtn.disabled = true;
-            fantaVotaBtn.textContent = 'Hai già votato!';
+            fantaVotaBtn.textContent = 'Invio...';
 
-            showMessage('Voto registrato! Grazie! 🎉', false);
-            renderClassifica();
+            try {
+                await db.collection(FORM_DATA_COLLECTION).add({
+                    nome,
+                    vincitore,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+
+                fantaVotesCache.push({ nome, vincitore });
+                fantaForm.querySelectorAll('input').forEach(i => i.disabled = true);
+                fantaVotaBtn.textContent = 'Hai già votato!';
+
+                showMessage('Voto registrato! Grazie! 🎉', false);
+                renderClassifica();
+            } catch (err) {
+                console.error('Firestore write error:', err);
+                showMessage('Errore salvataggio. Riprova.', true);
+                fantaVotaBtn.disabled = false;
+                fantaVotaBtn.textContent = 'Vota!';
+            }
         });
 
         fantaNome.addEventListener('input', () => {
@@ -1053,7 +1092,7 @@
             }
         });
 
-        renderClassifica();
+        loadFormData();
 
         // Countdown live - 15 Marzo 2025 ore 19:30
         const partyDate = new Date('2026-02-28T20:30:00');
